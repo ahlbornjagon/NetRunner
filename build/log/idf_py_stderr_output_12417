@@ -1,2 +1,0 @@
-Command: ninja monitor.py
-ninja: error: unknown target 'monitor.py', did you mean 'monitor'?
