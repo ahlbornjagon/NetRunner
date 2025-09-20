@@ -1,0 +1,72 @@
+Command: ninja flash
+[1/5] cd /home/jagon/NetRunner/build && /home/jagon/.espressif/python_env/idf6.0_py3.10_env/bin/python /home/jagon/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /home/jagon/NetRunner/build/partition_table/partition-table.bin /home/jagon/NetRunner/build/NetRunner.bin
+NetRunner.bin binary size 0xb79c0 bytes. Smallest app partition is 0x100000 bytes. 0x48640 bytes (28%) free.
+[2/5] Performing build step for 'bootloader'
+[1/1] cd /home/jagon/NetRunner/build/bootloader && /home/jagon/.espressif/python_env/idf6.0_py3.10_env/bin/python /home/jagon/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x1000 /home/jagon/NetRunner/build/bootloader/bootloader.bin
+Bootloader binary size 0x6680 bytes. 0x980 bytes (8%) free.
+[3/5] No install step for 'bootloader'
+[4/5] Completed 'bootloader'
+[4/5] Running utility command for flash
+esptool.py --chip esp32 -p /dev/ttyUSB0 -b 460800 --before=default_reset --after=hard_reset write_flash --flash_mode dio --flash_freq 40m --flash_size 2MB 0x1000 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 NetRunner.bin
+esptool.py v4.10.0
+Serial port /dev/ttyUSB0
+Connecting....
+Chip is ESP32-D0WD-V3 (revision v3.1)
+Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
+Crystal is 40MHz
+MAC: 88:13:bf:00:11:bc
+Uploading stub...
+Running stub...
+Stub running...
+Changing baud rate to 460800
+Changed.
+Configuring flash size...
+Flash will be erased from 0x00001000 to 0x00007fff...
+Flash will be erased from 0x00008000 to 0x00008fff...
+Flash will be erased from 0x00010000 to 0x000c7fff...
+SHA digest in image updated
+Compressed 26240 bytes to 16589...
+Writing at 0x00001000... (50 %)
+Writing at 0x0000756f... (100 %)
+Wrote 26240 bytes (16589 compressed) at 0x00001000 in 0.6 seconds (effective 341.8 kbit/s)...
+Hash of data verified.
+Compressed 3072 bytes to 103...
+Writing at 0x00008000... (100 %)
+Wrote 3072 bytes (103 compressed) at 0x00008000 in 0.0 seconds (effective 844.8 kbit/s)...
+Hash of data verified.
+Compressed 752064 bytes to 478739...
+Writing at 0x00010000... (3 %)
+Writing at 0x0001c619... (6 %)
+Writing at 0x00024be3... (10 %)
+Writing at 0x0002f05e... (13 %)
+Writing at 0x000349e5... (16 %)
+Writing at 0x0003a774... (20 %)
+Writing at 0x0004044c... (23 %)
+Writing at 0x000461d4... (26 %)
+Writing at 0x0004bd2a... (30 %)
+Writing at 0x00051f81... (33 %)
+Writing at 0x00057581... (36 %)
+Writing at 0x0005cae6... (40 %)
+Writing at 0x000622ac... (43 %)
+Writing at 0x00067f4c... (46 %)
+Writing at 0x0006d7ec... (50 %)
+Writing at 0x00072e64... (53 %)
+Writing at 0x000788cd... (56 %)
+Writing at 0x0007e94b... (60 %)
+Writing at 0x00083fe9... (63 %)
+Writing at 0x00089c4a... (66 %)
+Writing at 0x0008f8c4... (70 %)
+Writing at 0x00095104... (73 %)
+Writing at 0x0009ac2a... (76 %)
+Writing at 0x000a0928... (80 %)
+Writing at 0x000a9423... (83 %)
+Writing at 0x000af1d3... (86 %)
+Writing at 0x000b55a4... (90 %)
+Writing at 0x000bb167... (93 %)
+Writing at 0x000c0c7a... (96 %)
+Writing at 0x000c6152... (100 %)
+Wrote 752064 bytes (478739 compressed) at 0x00010000 in 12.0 seconds (effective 502.4 kbit/s)...
+Hash of data verified.
+
+Leaving...
+Hard resetting via RTS pin...
