@@ -18,6 +18,10 @@
 #include "esp_event.h"
 #include "nvs_flash.h"
 #include "regex.h"
+#include "protobuf/pb_encode.h"
+#include "protobuf/pb_decode.h"
+#include "protobuf/pb_common.h"
+#include "protobuf/uart.pb.h"
 
 #define DEFAULT_SCAN_LIST_SIZE CONFIG_EXAMPLE_SCAN_LIST_SIZE
 
@@ -29,10 +33,10 @@ static uint8_t channel_list[CHANNEL_LIST_SIZE] = {1, 6, 11};
 
 static const char *TAG = "scan";
 
-QueueHandle_t scanned_aps;
-QueueHandle_t processed_aps;
+QueueHandle_t _q_scanned_aps;
+QueueHandle_t _q_processed_aps;
 
-static struct processed_ap_t{
+typedef struct {
     uint8_t mac[6];
     uint8_t ssid[33];
     uint8_t channel;
@@ -40,124 +44,125 @@ static struct processed_ap_t{
     wifi_auth_mode_t authmode;
     wifi_cipher_type_t pairwise_cipher;
     wifi_cipher_type_t groupwise_cipher;
-}
+    char country[3];
+} processed_ap_t;
 
-static void print_auth_mode(int authmode)
-{
-    switch (authmode) {
-    case WIFI_AUTH_OPEN:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_OPEN");
-        break;
-    case WIFI_AUTH_OWE:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_OWE");
-        break;
-    case WIFI_AUTH_WEP:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WEP");
-        break;
-    case WIFI_AUTH_WPA_PSK:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA_PSK");
-        break;
-    case WIFI_AUTH_WPA2_PSK:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_PSK");
-        break;
-    case WIFI_AUTH_WPA_WPA2_PSK:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA_WPA2_PSK");
-        break;
-    case WIFI_AUTH_ENTERPRISE:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_ENTERPRISE");
-        break;
-    case WIFI_AUTH_WPA3_PSK:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_PSK");
-        break;
-    case WIFI_AUTH_WPA2_WPA3_PSK:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_WPA3_PSK");
-        break;
-    case WIFI_AUTH_WPA3_ENTERPRISE:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_ENTERPRISE");
-        break;
-    case WIFI_AUTH_WPA2_WPA3_ENTERPRISE:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_WPA3_ENTERPRISE");
-        break;
-    case WIFI_AUTH_WPA3_ENT_192:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_ENT_192");
-        break;
-    default:
-        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_UNKNOWN");
-        break;
-    }
-}
+// static void print_auth_mode(int authmode)
+// {
+//     switch (authmode) {
+//     case WIFI_AUTH_OPEN:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_OPEN");
+//         break;
+//     case WIFI_AUTH_OWE:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_OWE");
+//         break;
+//     case WIFI_AUTH_WEP:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WEP");
+//         break;
+//     case WIFI_AUTH_WPA_PSK:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA_PSK");
+//         break;
+//     case WIFI_AUTH_WPA2_PSK:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_PSK");
+//         break;
+//     case WIFI_AUTH_WPA_WPA2_PSK:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA_WPA2_PSK");
+//         break;
+//     case WIFI_AUTH_ENTERPRISE:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_ENTERPRISE");
+//         break;
+//     case WIFI_AUTH_WPA3_PSK:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_PSK");
+//         break;
+//     case WIFI_AUTH_WPA2_WPA3_PSK:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_WPA3_PSK");
+//         break;
+//     case WIFI_AUTH_WPA3_ENTERPRISE:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_ENTERPRISE");
+//         break;
+//     case WIFI_AUTH_WPA2_WPA3_ENTERPRISE:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_WPA3_ENTERPRISE");
+//         break;
+//     case WIFI_AUTH_WPA3_ENT_192:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_ENT_192");
+//         break;
+//     default:
+//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_UNKNOWN");
+//         break;
+//     }
+// }
 
-static void print_cipher_type(int pairwise_cipher, int group_cipher)
-{
-    switch (pairwise_cipher) {
-    case WIFI_CIPHER_TYPE_NONE:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_NONE");
-        break;
-    case WIFI_CIPHER_TYPE_WEP40:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_WEP40");
-        break;
-    case WIFI_CIPHER_TYPE_WEP104:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_WEP104");
-        break;
-    case WIFI_CIPHER_TYPE_TKIP:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_TKIP");
-        break;
-    case WIFI_CIPHER_TYPE_CCMP:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_CCMP");
-        break;
-    case WIFI_CIPHER_TYPE_TKIP_CCMP:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_TKIP_CCMP");
-        break;
-    case WIFI_CIPHER_TYPE_AES_CMAC128:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_AES_CMAC128");
-        break;
-    case WIFI_CIPHER_TYPE_SMS4:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_SMS4");
-        break;
-    case WIFI_CIPHER_TYPE_GCMP:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_GCMP");
-        break;
-    case WIFI_CIPHER_TYPE_GCMP256:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_GCMP256");
-        break;
-    default:
-        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_UNKNOWN");
-        break;
-    }
+// static void print_cipher_type(int pairwise_cipher, int group_cipher)
+// {
+//     switch (pairwise_cipher) {
+//     case WIFI_CIPHER_TYPE_NONE:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_NONE");
+//         break;
+//     case WIFI_CIPHER_TYPE_WEP40:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_WEP40");
+//         break;
+//     case WIFI_CIPHER_TYPE_WEP104:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_WEP104");
+//         break;
+//     case WIFI_CIPHER_TYPE_TKIP:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_TKIP");
+//         break;
+//     case WIFI_CIPHER_TYPE_CCMP:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_CCMP");
+//         break;
+//     case WIFI_CIPHER_TYPE_TKIP_CCMP:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_TKIP_CCMP");
+//         break;
+//     case WIFI_CIPHER_TYPE_AES_CMAC128:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_AES_CMAC128");
+//         break;
+//     case WIFI_CIPHER_TYPE_SMS4:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_SMS4");
+//         break;
+//     case WIFI_CIPHER_TYPE_GCMP:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_GCMP");
+//         break;
+//     case WIFI_CIPHER_TYPE_GCMP256:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_GCMP256");
+//         break;
+//     default:
+//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_UNKNOWN");
+//         break;
+//     }
 
-    switch (group_cipher) {
-    case WIFI_CIPHER_TYPE_NONE:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_NONE");
-        break;
-    case WIFI_CIPHER_TYPE_WEP40:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_WEP40");
-        break;
-    case WIFI_CIPHER_TYPE_WEP104:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_WEP104");
-        break;
-    case WIFI_CIPHER_TYPE_TKIP:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_TKIP");
-        break;
-    case WIFI_CIPHER_TYPE_CCMP:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_CCMP");
-        break;
-    case WIFI_CIPHER_TYPE_TKIP_CCMP:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_TKIP_CCMP");
-        break;
-    case WIFI_CIPHER_TYPE_SMS4:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_SMS4");
-        break;
-    case WIFI_CIPHER_TYPE_GCMP:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_GCMP");
-        break;
-    case WIFI_CIPHER_TYPE_GCMP256:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_GCMP256");
-        break;
-    default:
-        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_UNKNOWN");
-        break;
-    }
-}
+//     switch (group_cipher) {
+//     case WIFI_CIPHER_TYPE_NONE:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_NONE");
+//         break;
+//     case WIFI_CIPHER_TYPE_WEP40:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_WEP40");
+//         break;
+//     case WIFI_CIPHER_TYPE_WEP104:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_WEP104");
+//         break;
+//     case WIFI_CIPHER_TYPE_TKIP:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_TKIP");
+//         break;
+//     case WIFI_CIPHER_TYPE_CCMP:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_CCMP");
+//         break;
+//     case WIFI_CIPHER_TYPE_TKIP_CCMP:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_TKIP_CCMP");
+//         break;
+//     case WIFI_CIPHER_TYPE_SMS4:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_SMS4");
+//         break;
+//     case WIFI_CIPHER_TYPE_GCMP:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_GCMP");
+//         break;
+//     case WIFI_CIPHER_TYPE_GCMP256:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_GCMP256");
+//         break;
+//     default:
+//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_UNKNOWN");
+//         break;
+//     }
+// }
 
 #ifdef USE_CHANNEL_BITMAP
 static void array_2_channel_bitmap(const uint8_t channel_list[], const uint8_t channel_list_size, wifi_scan_config_t *scan_config) {
@@ -210,7 +215,9 @@ static void wifi_scan(void)
     ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&number, ap_info));
     ESP_LOGI(TAG, "Total APs scanned = %u, actual AP number ap_info holds = %u", ap_count, number);
     for (int i = 0; i < number; i++) {
-        xQueueSend(scanned_aps, &ap_info[i], portMAX_DELAY);
+        if (!xQueueSend(_q_scanned_aps, &ap_info[i], portMAX_DELAY)){
+            printf("The queue is full, gonna keep trying");
+        };
     }
 }
 
@@ -237,6 +244,7 @@ void app_start(void)
     // wifi_auth_mode_t authmode            ->      Authmode 
     // wifi_cipher_type_t pairwise_cipher   ->      Pairwise cypher
     // wifi_cipher_type_t group_cipher      ->      Groupwise Cypher
+
 void proccess_aps(void)
 {
 
@@ -244,10 +252,65 @@ void proccess_aps(void)
     processed_ap_t processed_aps;
 
     while(1){
-        if(xQueueReceive(scanned_aps, &raw_ap, portMAX_DELAY )){
-            strncpy(processed_aps.)
+        if(xQueueReceive(_q_scanned_aps, &raw_ap, portMAX_DELAY )){
+            memcpy(processed_aps.mac, raw_ap.bssid, 6 );
+            memcpy(processed_aps.ssid, raw_ap.ssid, 33);
+            processed_aps.channel = raw_ap.primary;
+            processed_aps.rssi = raw_ap.rssi;
+            processed_aps.authmode = raw_ap.authmode;
+            processed_aps.pairwise_cipher = raw_ap.pairwise_cipher;
+            processed_aps.groupwise_cipher = raw_ap.group_cipher;
+            memcpy(processed_aps.country, raw_ap.country.cc,3);
+            if (xQueueSend(_q_processed_aps, &processed_aps, portMAX_DELAY) != 1)
+            {
+                printf("THE QUEUE IS FULL, SKIPPING");
+            }
+            memset(&processed_aps, 0, sizeof(processed_ap_t));
         }
 
+    }
+}
+
+void send_uart(void)
+{
+    processed_ap_t processed_aps; 
+    size_t message_length;
+
+
+    while(1)
+    {
+        if (xQueueReceive(_q_processed_aps, &proccess_aps, portMAX_DELAY)){
+
+        
+            uint8_t buffer[256];
+            bool status = false;
+            uartMessage message = uartMessage_init_zero;
+        
+            strncpy(message.mac, (char*)processed_aps.mac, 6);
+
+            strncpy(message.ssid, (char*)processed_aps.ssid, 33);
+
+            message.channel = (uint32_t)processed_aps.channel;
+            message.rssi = (uint32_t)processed_aps.rssi;
+            message.authmode = (uint32_t)processed_aps.authmode;
+            message.pairwise_cipher = (uint32_t)processed_aps.pairwise_cipher;
+            message.groupwise_cipher = (uint32_t)processed_aps.groupwise_cipher;
+
+            strncpy(message.country, (char*)processed_aps.country,3);
+
+            pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+            message_length = stream.bytes_written;
+            status = pb_encode(&stream, uartMessage_fields, &message);
+
+            if(!status || message_length == 0)
+            {
+                printf("Encoding failed: %s\n", PB_GET_ERROR(&stream));
+            }
+
+            // Todo: Now we need to send this boi over the uart
+            // Also need to fix the name of main entry, also kick off the freeRtos tasks
+
+        }    
     }
 
 

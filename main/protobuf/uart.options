@@ -1,0 +1,3 @@
+uartMessage.mac max_size:18
+uartMessage.ssid max_size:33
+uartMessage.country max_size:3

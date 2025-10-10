@@ -2,3 +2,5 @@ build/
 sdkconfig.old
 *.pyc
 .vscode/
+sdkconfig
+*.lock
