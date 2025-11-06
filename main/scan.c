@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
+#include "driver/uart.h"
 #include "regex.h"
 #include "protobuf/pb_encode.h"
 #include "protobuf/pb_decode.h"
@@ -31,10 +32,18 @@
 static uint8_t channel_list[CHANNEL_LIST_SIZE] = {1, 6, 11};
 #endif /*CONFIG_EXAMPLE_USE_SCAN_CHANNEL_BITMAP*/
 
+#define UART_NUM UART_NUM_2
+#define TXD_PIN 17
+#define RXD_PIN 16
+#define BAUDRATE 115200
+#define BUF_SIZE 1024
+
+
 static const char *TAG = "scan";
 
 QueueHandle_t _q_scanned_aps;
 QueueHandle_t _q_processed_aps;
+QueueHandle_t uart_queue;
 
 typedef struct {
     uint8_t mac[6];
@@ -47,122 +56,25 @@ typedef struct {
     char country[3];
 } processed_ap_t;
 
-// static void print_auth_mode(int authmode)
-// {
-//     switch (authmode) {
-//     case WIFI_AUTH_OPEN:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_OPEN");
-//         break;
-//     case WIFI_AUTH_OWE:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_OWE");
-//         break;
-//     case WIFI_AUTH_WEP:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WEP");
-//         break;
-//     case WIFI_AUTH_WPA_PSK:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA_PSK");
-//         break;
-//     case WIFI_AUTH_WPA2_PSK:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_PSK");
-//         break;
-//     case WIFI_AUTH_WPA_WPA2_PSK:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA_WPA2_PSK");
-//         break;
-//     case WIFI_AUTH_ENTERPRISE:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_ENTERPRISE");
-//         break;
-//     case WIFI_AUTH_WPA3_PSK:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_PSK");
-//         break;
-//     case WIFI_AUTH_WPA2_WPA3_PSK:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_WPA3_PSK");
-//         break;
-//     case WIFI_AUTH_WPA3_ENTERPRISE:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_ENTERPRISE");
-//         break;
-//     case WIFI_AUTH_WPA2_WPA3_ENTERPRISE:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_WPA3_ENTERPRISE");
-//         break;
-//     case WIFI_AUTH_WPA3_ENT_192:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_ENT_192");
-//         break;
-//     default:
-//         ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_UNKNOWN");
-//         break;
-//     }
-// }
+int init_uart(void)
+{
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, uart_buffer_size*2, uart_buffer_size*2, 10, &uart_queue, 0));
+    const uart_port_t uart_num = UART_NUM;
+    uart_config_t uart_config = {
+        .baud_rate = BAUDRATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_CTS_RTS,
+        .rx_flow_ctrl_thresh = 122,
+    }
 
-// static void print_cipher_type(int pairwise_cipher, int group_cipher)
-// {
-//     switch (pairwise_cipher) {
-//     case WIFI_CIPHER_TYPE_NONE:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_NONE");
-//         break;
-//     case WIFI_CIPHER_TYPE_WEP40:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_WEP40");
-//         break;
-//     case WIFI_CIPHER_TYPE_WEP104:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_WEP104");
-//         break;
-//     case WIFI_CIPHER_TYPE_TKIP:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_TKIP");
-//         break;
-//     case WIFI_CIPHER_TYPE_CCMP:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_CCMP");
-//         break;
-//     case WIFI_CIPHER_TYPE_TKIP_CCMP:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_TKIP_CCMP");
-//         break;
-//     case WIFI_CIPHER_TYPE_AES_CMAC128:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_AES_CMAC128");
-//         break;
-//     case WIFI_CIPHER_TYPE_SMS4:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_SMS4");
-//         break;
-//     case WIFI_CIPHER_TYPE_GCMP:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_GCMP");
-//         break;
-//     case WIFI_CIPHER_TYPE_GCMP256:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_GCMP256");
-//         break;
-//     default:
-//         ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_UNKNOWN");
-//         break;
-//     }
+    ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    
+    return 0;
+};
 
-//     switch (group_cipher) {
-//     case WIFI_CIPHER_TYPE_NONE:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_NONE");
-//         break;
-//     case WIFI_CIPHER_TYPE_WEP40:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_WEP40");
-//         break;
-//     case WIFI_CIPHER_TYPE_WEP104:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_WEP104");
-//         break;
-//     case WIFI_CIPHER_TYPE_TKIP:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_TKIP");
-//         break;
-//     case WIFI_CIPHER_TYPE_CCMP:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_CCMP");
-//         break;
-//     case WIFI_CIPHER_TYPE_TKIP_CCMP:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_TKIP_CCMP");
-//         break;
-//     case WIFI_CIPHER_TYPE_SMS4:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_SMS4");
-//         break;
-//     case WIFI_CIPHER_TYPE_GCMP:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_GCMP");
-//         break;
-//     case WIFI_CIPHER_TYPE_GCMP256:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_GCMP256");
-//         break;
-//     default:
-//         ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_UNKNOWN");
-//         break;
-//     }
-// }
 
 #ifdef USE_CHANNEL_BITMAP
 static void array_2_channel_bitmap(const uint8_t channel_list[], const uint8_t channel_list_size, wifi_scan_config_t *scan_config) {
@@ -229,7 +141,14 @@ void app_start(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
-    ESP_ERROR_CHECK( ret );
+    if (uart_ret != ESP_OK) {
+        printf("UART Init failed");
+        return;
+    }
+
+    xTaskCreate(&proccess_aps, "Process APs", 4096, NULL, 5, NULL);
+    xTaskCreate(&send_uart, "Send UART", 4096, NULL, 5, NULL);
+    
     while(1){
         wifi_scan();
         vTaskDelay(pdMS_TO_TICKS(5000));
