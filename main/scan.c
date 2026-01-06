@@ -58,7 +58,7 @@ typedef struct {
 
 int init_uart(void)
 {
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, uart_buffer_size*2, uart_buffer_size*2, 10, &uart_queue, 0));
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE*2, BUF_SIZE*2, 10, &uart_queue, 0));
     const uart_port_t uart_num = UART_NUM;
     uart_config_t uart_config = {
         .baud_rate = BAUDRATE,
@@ -67,13 +67,92 @@ int init_uart(void)
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_CTS_RTS,
         .rx_flow_ctrl_thresh = 122,
-    }
+    };
 
     ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     
     return 0;
 };
+
+void send_uart(void *pvParameters)
+{
+    processed_ap_t processed_aps; 
+    size_t message_length;
+
+    while(1)
+    {
+        if (xQueueReceive(_q_processed_aps, &processed_aps, portMAX_DELAY)){
+
+            uint8_t buffer[256];
+            bool status = false;
+            uartMessage message = uartMessage_init_zero;
+            
+            /*
+            This is dumb but mac is bytes and ssid/country are strings so we convert mac to hex since its prob not printable
+            and pb encode expects printable strings for encoding (plus null terminators)
+            */  
+            snprintf(message.mac, sizeof(message.mac), "%02x%02x%02x%02x%02x%02x",
+                    processed_aps.mac[0], processed_aps.mac[1], processed_aps.mac[2],
+                    processed_aps.mac[3], processed_aps.mac[4], processed_aps.mac[5]);
+            snprintf(message.ssid, sizeof(message.ssid), "%.*s", 32, (char*)processed_aps.ssid);
+
+            message.channel = (uint32_t)processed_aps.channel;
+            message.rssi = (uint32_t)processed_aps.rssi;
+            message.authmode = (uint32_t)processed_aps.authmode;
+            message.pairwise_cipher = (uint32_t)processed_aps.pairwise_cipher;
+            message.groupwise_cipher = (uint32_t)processed_aps.groupwise_cipher;
+
+            snprintf(message.country, sizeof(message.country), "%.*s", 2, (char*)processed_aps.country);
+
+            pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+            status = pb_encode(&stream, uartMessage_fields, &message);
+            message_length = stream.bytes_written;
+
+            if(!status)
+            {
+                printf("Encoding failed: %s\n", PB_GET_ERROR(&stream));
+            }
+            else
+            {
+                printf("Encoded %zu bytes\n", message_length);
+                
+                // Send buffer over UART here
+                uart_write_bytes(UART_NUM, (const char *)buffer, message_length);
+
+
+            }
+
+            // Todo: Now we need to send this boi over the uart
+        }    
+    }
+}
+
+void proccess_aps(void *pvParameters)
+{
+
+    wifi_ap_record_t raw_ap;
+    processed_ap_t processed_aps;
+
+    while(1){
+        if(xQueueReceive(_q_scanned_aps, &raw_ap, portMAX_DELAY )){
+            memcpy(processed_aps.mac, raw_ap.bssid, 6 );
+            memcpy(processed_aps.ssid, raw_ap.ssid, 33);
+            processed_aps.channel = raw_ap.primary;
+            processed_aps.rssi = raw_ap.rssi;
+            processed_aps.authmode = raw_ap.authmode;
+            processed_aps.pairwise_cipher = raw_ap.pairwise_cipher;
+            processed_aps.groupwise_cipher = raw_ap.group_cipher;
+            memcpy(processed_aps.country, raw_ap.country.cc,3);
+            if (xQueueSend(_q_processed_aps, &processed_aps, portMAX_DELAY) != 1)
+            {
+                printf("THE QUEUE IS FULL, SKIPPING");
+            }
+            memset(&processed_aps, 0, sizeof(processed_ap_t));
+        }
+
+    }
+}
 
 
 #ifdef USE_CHANNEL_BITMAP
@@ -129,11 +208,14 @@ static void wifi_scan(void)
     for (int i = 0; i < number; i++) {
         if (!xQueueSend(_q_scanned_aps, &ap_info[i], portMAX_DELAY)){
             printf("The queue is full, gonna keep trying");
-        };
+        }
+        else{
+            printf("Sent AP Info: %.32s\n", (char *)ap_info[i].ssid);   
+        }
     }
 }
 
-void app_start(void)
+void app_main(void)
 {
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -141,14 +223,18 @@ void app_start(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
-    if (uart_ret != ESP_OK) {
+    if (ret != ESP_OK) {
         printf("UART Init failed");
         return;
     }
+    _q_scanned_aps = xQueueCreate(10, sizeof(wifi_ap_record_t));
+    _q_processed_aps = xQueueCreate(10, sizeof(processed_ap_t));
 
+    printf("Starting Tasks\n");
     xTaskCreate(&proccess_aps, "Process APs", 4096, NULL, 5, NULL);
     xTaskCreate(&send_uart, "Send UART", 4096, NULL, 5, NULL);
-    
+    printf("Tasks Started\n");
+
     while(1){
         wifi_scan();
         vTaskDelay(pdMS_TO_TICKS(5000));
@@ -164,73 +250,6 @@ void app_start(void)
     // wifi_cipher_type_t pairwise_cipher   ->      Pairwise cypher
     // wifi_cipher_type_t group_cipher      ->      Groupwise Cypher
 
-void proccess_aps(void)
-{
-
-    wifi_ap_record_t raw_ap;
-    processed_ap_t processed_aps;
-
-    while(1){
-        if(xQueueReceive(_q_scanned_aps, &raw_ap, portMAX_DELAY )){
-            memcpy(processed_aps.mac, raw_ap.bssid, 6 );
-            memcpy(processed_aps.ssid, raw_ap.ssid, 33);
-            processed_aps.channel = raw_ap.primary;
-            processed_aps.rssi = raw_ap.rssi;
-            processed_aps.authmode = raw_ap.authmode;
-            processed_aps.pairwise_cipher = raw_ap.pairwise_cipher;
-            processed_aps.groupwise_cipher = raw_ap.group_cipher;
-            memcpy(processed_aps.country, raw_ap.country.cc,3);
-            if (xQueueSend(_q_processed_aps, &processed_aps, portMAX_DELAY) != 1)
-            {
-                printf("THE QUEUE IS FULL, SKIPPING");
-            }
-            memset(&processed_aps, 0, sizeof(processed_ap_t));
-        }
-
-    }
-}
-
-void send_uart(void)
-{
-    processed_ap_t processed_aps; 
-    size_t message_length;
 
 
-    while(1)
-    {
-        if (xQueueReceive(_q_processed_aps, &proccess_aps, portMAX_DELAY)){
 
-        
-            uint8_t buffer[256];
-            bool status = false;
-            uartMessage message = uartMessage_init_zero;
-        
-            strncpy(message.mac, (char*)processed_aps.mac, 6);
-
-            strncpy(message.ssid, (char*)processed_aps.ssid, 33);
-
-            message.channel = (uint32_t)processed_aps.channel;
-            message.rssi = (uint32_t)processed_aps.rssi;
-            message.authmode = (uint32_t)processed_aps.authmode;
-            message.pairwise_cipher = (uint32_t)processed_aps.pairwise_cipher;
-            message.groupwise_cipher = (uint32_t)processed_aps.groupwise_cipher;
-
-            strncpy(message.country, (char*)processed_aps.country,3);
-
-            pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
-            message_length = stream.bytes_written;
-            status = pb_encode(&stream, uartMessage_fields, &message);
-
-            if(!status || message_length == 0)
-            {
-                printf("Encoding failed: %s\n", PB_GET_ERROR(&stream));
-            }
-
-            // Todo: Now we need to send this boi over the uart
-            // Also need to fix the name of main entry, also kick off the freeRtos tasks
-
-        }    
-    }
-
-
-}

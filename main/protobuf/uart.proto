@@ -1,7 +1,6 @@
 syntax = "proto3";
 
 message uartMessage{
-
   string mac = 1;
   string ssid = 2;
   uint32 channel = 3;
@@ -10,5 +9,4 @@ message uartMessage{
   int32 pairwise_cipher = 6;
   int32 groupwise_cipher = 7;
   string country = 8;
-
 }
