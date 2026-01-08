@@ -13,8 +13,8 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
-#include "esp_wifi.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
 #include "driver/uart.h"
@@ -30,7 +30,7 @@
 #define USE_CHANNEL_BITMAP 1
 #define CHANNEL_LIST_SIZE 3
 static uint8_t channel_list[CHANNEL_LIST_SIZE] = {1, 6, 11};
-#endif /*CONFIG_EXAMPLE_USE_SCAN_CHANNEL_BITMAP*/
+#endif /*CONFIG_EXAMPLE_USE_SCAN_CHANNEL_BITMAP*/                                                                                   
 
 #define UART_NUM UART_NUM_2
 #define TXD_PIN 17
@@ -58,21 +58,38 @@ typedef struct {
 
 int init_uart(void)
 {
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE*2, BUF_SIZE*2, 10, &uart_queue, 0));
-    const uart_port_t uart_num = UART_NUM;
+
+    esp_err_t err;
+
+    // ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE*2, BUF_SIZE*2, 10, &uart_queue, 0));
+    err = uart_driver_install(UART_NUM, BUF_SIZE*2, BUF_SIZE*2, 10, &uart_queue, 0);
+    printf("uart_driver_install: %s\n", esp_err_to_name(err));
+    if (err != ESP_OK) return err;
+
+
+
     uart_config_t uart_config = {
         .baud_rate = BAUDRATE,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_CTS_RTS,
-        .rx_flow_ctrl_thresh = 122,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .rx_flow_ctrl_thresh = UART_HW_FLOWCTRL_DISABLE,
     };
 
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    err = uart_param_config(UART_NUM, &uart_config);
+    printf("uart_param_config: %s\n", esp_err_to_name(err));
+    if (err != ESP_OK) return err;
+
+    err = uart_set_pin(UART_NUM, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    printf("uart_set_pin: %s\n", esp_err_to_name(err));
+    if (err != ESP_OK) return err;
+
+    // ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
+    // ESP_ERROR_CHECK(uart_set_pin(UART_NUM, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     
-    return 0;
+    return ESP_OK;
+    // return 0;
 };
 
 void send_uart(void *pvParameters)
@@ -117,9 +134,13 @@ void send_uart(void *pvParameters)
             {
                 printf("Encoded %zu bytes\n", message_length);
                 
-                // Send buffer over UART here
-                uart_write_bytes(UART_NUM, (const char *)buffer, message_length);
-
+            // Send buffer over UART here
+            int bytes_sent = uart_write_bytes(UART_NUM, (const char *)buffer, message_length);
+            if (bytes_sent == message_length) {
+                printf("Sent %d bytes successfully\n", bytes_sent);
+            } else {
+                printf("Failed to send all bytes. Sent %d of %zu\n", bytes_sent, message_length);
+            }
 
             }
 
@@ -167,7 +188,7 @@ static void array_2_channel_bitmap(const uint8_t channel_list[], const uint8_t c
 
 
 /* Initialize Wi-Fi as sta and set scan method */
-static void wifi_scan(void)
+static void wifi_init(void)
 {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -177,29 +198,25 @@ static void wifi_scan(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    uint16_t number = DEFAULT_SCAN_LIST_SIZE;
-    wifi_ap_record_t ap_info[DEFAULT_SCAN_LIST_SIZE];
 
-    uint16_t ap_count = 0;
-    memset(ap_info, 0, sizeof(ap_info));
 
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-#ifdef USE_CHANNEL_BITMAP
-    wifi_scan_config_t *scan_config = (wifi_scan_config_t *)calloc(1,sizeof(wifi_scan_config_t));
-    if (!scan_config) {
-        ESP_LOGE(TAG, "Memory Allocation for scan config failed!");
-        return;
-    }
-    array_2_channel_bitmap(channel_list, CHANNEL_LIST_SIZE, scan_config);
-    esp_wifi_scan_start(scan_config, true);
-    free(scan_config);
 
-#else
+}
+
+static void wifi_scan(void)
+{
+
+    uint16_t number = DEFAULT_SCAN_LIST_SIZE;
+    uint16_t ap_count = 0;
+    wifi_ap_record_t ap_info[DEFAULT_SCAN_LIST_SIZE];
+
+    memset(ap_info, 0, sizeof(ap_info));
     esp_wifi_scan_start(NULL, true);
-#endif /*USE_CHANNEL_BITMAP*/
+
 
     ESP_LOGI(TAG, "Max AP number ap_info can hold = %u", number);
     ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
@@ -217,6 +234,15 @@ static void wifi_scan(void)
 
 void app_main(void)
 {
+    // Initialize UART
+    if(init_uart() != ESP_OK){
+        printf("UART Init Failed");
+        return;
+    }
+    else{
+        printf("UART Initialized\n");
+    }
+
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -224,7 +250,7 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     if (ret != ESP_OK) {
-        printf("UART Init failed");
+        printf("NVS FLASH Init failed");
         return;
     }
     _q_scanned_aps = xQueueCreate(10, sizeof(wifi_ap_record_t));
@@ -235,6 +261,7 @@ void app_main(void)
     xTaskCreate(&send_uart, "Send UART", 4096, NULL, 5, NULL);
     printf("Tasks Started\n");
 
+    wifi_init();
     while(1){
         wifi_scan();
         vTaskDelay(pdMS_TO_TICKS(5000));
