@@ -23,6 +23,7 @@
 #include "protobuf/pb_decode.h"
 #include "protobuf/pb_common.h"
 #include "protobuf/uart.pb.h"
+#include <arpa/inet.h>
 
 #define DEFAULT_SCAN_LIST_SIZE CONFIG_EXAMPLE_SCAN_LIST_SIZE
 
@@ -63,7 +64,7 @@ int init_uart(void)
 
     // ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE*2, BUF_SIZE*2, 10, &uart_queue, 0));
     err = uart_driver_install(UART_NUM, BUF_SIZE*2, BUF_SIZE*2, 10, &uart_queue, 0);
-    printf("uart_driver_install: %s\n", esp_err_to_name(err));
+    ESP_LOGI(TAG, "uart_driver_install: %s", esp_err_to_name(err));
     if (err != ESP_OK) return err;
 
 
@@ -78,11 +79,11 @@ int init_uart(void)
     };
 
     err = uart_param_config(UART_NUM, &uart_config);
-    printf("uart_param_config: %s\n", esp_err_to_name(err));
+    ESP_LOGI(TAG, "uart_param_config: %s", esp_err_to_name(err));
     if (err != ESP_OK) return err;
 
     err = uart_set_pin(UART_NUM, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    printf("uart_set_pin: %s\n", esp_err_to_name(err));
+    ESP_LOGI(TAG, "uart_set_pin: %s", esp_err_to_name(err));
     if (err != ESP_OK) return err;
 
     // ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
@@ -105,14 +106,18 @@ void send_uart(void *pvParameters)
             bool status = false;
             uartMessage message = uartMessage_init_zero;
             
-            /*
-            This is dumb but mac is bytes and ssid/country are strings so we convert mac to hex since its prob not printable
-            and pb encode expects printable strings for encoding (plus null terminators)
-            */  
-            snprintf(message.mac, sizeof(message.mac), "%02x%02x%02x%02x%02x%02x",
-                    processed_aps.mac[0], processed_aps.mac[1], processed_aps.mac[2],
-                    processed_aps.mac[3], processed_aps.mac[4], processed_aps.mac[5]);
-            snprintf(message.ssid, sizeof(message.ssid), "%.*s", 32, (char*)processed_aps.ssid);
+            // MAC is always 6 bytes (binary)
+            message.mac.size = 6;
+            memcpy(message.mac.bytes, processed_aps.mac, 6);
+
+            // SSID is null-terminated string
+            size_t ssid_len = strlen((char *)processed_aps.ssid);
+            message.ssid.size = ssid_len;
+            memcpy(message.ssid.bytes, processed_aps.ssid, ssid_len);
+
+            // Country is 3 bytes but might not be null-terminated
+            message.country.size = 3;
+            memcpy(message.country.bytes, processed_aps.country, 3);
 
             message.channel = (uint32_t)processed_aps.channel;
             message.rssi = (uint32_t)processed_aps.rssi;
@@ -120,31 +125,42 @@ void send_uart(void *pvParameters)
             message.pairwise_cipher = (uint32_t)processed_aps.pairwise_cipher;
             message.groupwise_cipher = (uint32_t)processed_aps.groupwise_cipher;
 
-            snprintf(message.country, sizeof(message.country), "%.*s", 2, (char*)processed_aps.country);
-
             pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
             status = pb_encode(&stream, uartMessage_fields, &message);
             message_length = stream.bytes_written;
+            ESP_LOGI(TAG, "MESSAGE LENGTH IS : %d", message_length);
 
             if(!status)
             {
-                printf("Encoding failed: %s\n", PB_GET_ERROR(&stream));
+                ESP_LOGI(TAG, "Encoding failed: %s", PB_GET_ERROR(&stream));
             }
             else
             {
-                printf("Encoded %zu bytes\n", message_length);
+                // Create frame with length header + message
+                uint8_t frame[4 + message_length];
+                uint32_t len = (uint32_t)message_length;
                 
-            // Send buffer over UART here
-            int bytes_sent = uart_write_bytes(UART_NUM, (const char *)buffer, message_length);
-            if (bytes_sent == message_length) {
-                printf("Sent %d bytes successfully\n", bytes_sent);
-            } else {
-                printf("Failed to send all bytes. Sent %d of %zu\n", bytes_sent, message_length);
+                // Copy length header into frame
+                memcpy(frame, &len, 4);
+                
+                // Copy message data into frame starting at index 4
+                memcpy(frame + 4, buffer, message_length);
+                
+                // Check yo self
+                ESP_LOGI(TAG, "Length bytes: %02x %02x %02x %02x", 
+                         ((uint8_t*)&len)[0], ((uint8_t*)&len)[1], 
+                         ((uint8_t*)&len)[2], ((uint8_t*)&len)[3]);
+                
+                // Write all da bytes
+                int bytes_sent = uart_write_bytes(UART_NUM, (const char *)frame, 4 + message_length);
+                
+                if (bytes_sent == 4 + message_length) {
+                    ESP_LOGI(TAG, "Sent %d bytes successfully ", bytes_sent);
+                } else {
+                    ESP_LOGI(TAG, "Failed to send all bytes. Sent %d of %d", bytes_sent, 4 + message_length);
+                }
+                
             }
-
-            }
-
-            // Todo: Now we need to send this boi over the uart
         }    
     }
 }
@@ -167,7 +183,7 @@ void proccess_aps(void *pvParameters)
             memcpy(processed_aps.country, raw_ap.country.cc,3);
             if (xQueueSend(_q_processed_aps, &processed_aps, portMAX_DELAY) != 1)
             {
-                printf("THE QUEUE IS FULL, SKIPPING");
+                ESP_LOGI(TAG, "THE QUEUE IS FULL, SKIPPING");
             }
             memset(&processed_aps, 0, sizeof(processed_ap_t));
         }
@@ -224,10 +240,11 @@ static void wifi_scan(void)
     ESP_LOGI(TAG, "Total APs scanned = %u, actual AP number ap_info holds = %u", ap_count, number);
     for (int i = 0; i < number; i++) {
         if (!xQueueSend(_q_scanned_aps, &ap_info[i], portMAX_DELAY)){
-            printf("The queue is full, gonna keep trying");
+            ESP_LOGI(TAG,"The queue is full, gonna keep trying");
         }
         else{
-            printf("Sent AP Info: %.32s\n", (char *)ap_info[i].ssid);   
+            ESP_LOGI(TAG, "Sent AP Info: %.32s", (char *)ap_info[i].ssid);
+
         }
     }
 }
@@ -236,11 +253,12 @@ void app_main(void)
 {
     // Initialize UART
     if(init_uart() != ESP_OK){
-        printf("UART Init Failed");
+        ESP_LOGI(TAG, "UART Init Failed");
         return;
     }
     else{
-        printf("UART Initialized\n");
+        ESP_LOGI(TAG, "UART Initialized");
+
     }
 
     // Initialize NVS
@@ -250,16 +268,17 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     if (ret != ESP_OK) {
-        printf("NVS FLASH Init failed");
+        ESP_LOGI(TAG, "NVS FLASH Init failed");
+
         return;
     }
     _q_scanned_aps = xQueueCreate(10, sizeof(wifi_ap_record_t));
     _q_processed_aps = xQueueCreate(10, sizeof(processed_ap_t));
 
-    printf("Starting Tasks\n");
+    ESP_LOGI(TAG, "Starting Tasks");
     xTaskCreate(&proccess_aps, "Process APs", 4096, NULL, 5, NULL);
     xTaskCreate(&send_uart, "Send UART", 4096, NULL, 5, NULL);
-    printf("Tasks Started\n");
+    ESP_LOGI(TAG,"Tasks Started");
 
     wifi_init();
     while(1){
